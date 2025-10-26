@@ -27,7 +27,6 @@ if not st.session_state.authenticated:
             st.session_state.authenticated = True
             st.session_state.username = username
             st.session_state.role = USER_CREDENTIALS[username]["role"]
-            st.experimental_rerun()
         else:
             st.error("Invalid credentials")
     st.stop()
