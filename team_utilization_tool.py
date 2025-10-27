@@ -2,49 +2,69 @@
 import streamlit as st
 import pandas as pd
 import hashlib
-import plotly.express as px
 import os
+from datetime import datetime, timedelta
+import plotly.express as px
 
+# File paths
 USER_FILE = "users.csv"
 UTIL_FILE = "utilization.csv"
 
+# Initialize files if they don't exist
 if not os.path.exists(USER_FILE):
     pd.DataFrame(columns=["username", "password", "role"]).to_csv(USER_FILE, index=False)
 
 if not os.path.exists(UTIL_FILE):
-    pd.DataFrame(columns=["username", "date", "project", "hours", "description"]).to_csv(UTIL_FILE, index=False)
+    pd.DataFrame(columns=["username", "date", "project", "percentage"]).to_csv(UTIL_FILE, index=False)
 
+# Hashing passwords
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def authenticate(username, password):
-    users = pd.read_csv(USER_FILE)
-    hashed = hash_password(password)
-    user = users[(users.username == username) & (users.password == hashed)]
-    if not user.empty:
-        return user.iloc[0]["role"]
-    return None
+# Load users
+def load_users():
+    return pd.read_csv(USER_FILE)
 
-def register_user(username, password):
-    users = pd.read_csv(USER_FILE)
-    if username in users.username.values:
+# Save new user
+def save_user(username, password, role="user"):
+    users = load_users()
+    if username in users["username"].values:
         return False
-    new_user = pd.DataFrame([[username, hash_password(password), "user"]], columns=["username", "password", "role"])
+    new_user = pd.DataFrame([[username, hash_password(password), role]], columns=["username", "password", "role"])
     users = pd.concat([users, new_user], ignore_index=True)
     users.to_csv(USER_FILE, index=False)
     return True
 
-def save_utilization(username, date, project, hours, description):
+# Authenticate user
+def authenticate(username, password):
+    users = load_users()
+    hashed = hash_password(password)
+    user = users[(users["username"] == username) & (users["password"] == hashed)]
+    if not user.empty:
+        return user.iloc[0]["role"]
+    return None
+
+# Save utilization entry
+def save_utilization(username, date, project, percentage):
     df = pd.read_csv(UTIL_FILE)
-    new_entry = pd.DataFrame([[username, date, project, hours, description]], columns=df.columns)
+    new_entry = pd.DataFrame([[username, date, project, percentage]], columns=["username", "date", "project", "percentage"])
     df = pd.concat([df, new_entry], ignore_index=True)
     df.to_csv(UTIL_FILE, index=False)
 
+# Load utilization data
 def load_utilization():
     return pd.read_csv(UTIL_FILE)
 
-st.set_page_config(page_title="Team Utilization Tool", layout="wide")
-st.title("🚀 Team Utilization Tool")
+# Weekly utilization summary
+def weekly_summary(df):
+    df["date"] = pd.to_datetime(df["date"])
+    df["week"] = df["date"].dt.to_period("W").apply(lambda r: r.start_time.strftime("%d/%m"))
+    summary = df.groupby(["username", "project", "week"]).agg({"percentage": "sum"}).reset_index()
+    summary["percentage"] = summary["percentage"].clip(upper=100)
+    return summary
+
+# App UI
+st.title("Team Utilization Tool")
 
 menu = ["Login", "Register"]
 choice = st.sidebar.selectbox("Menu", menu)
@@ -54,53 +74,52 @@ if choice == "Register":
     new_user = st.text_input("Username")
     new_pass = st.text_input("Password", type='password')
     if st.button("Register"):
-        if register_user(new_user, new_pass):
+        if save_user(new_user, new_pass):
             st.success("User registered successfully")
         else:
             st.error("Username already exists")
 
 elif choice == "Login":
     st.subheader("Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type='password')
-    if st.button("Login"):
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type='password')
+    if st.sidebar.button("Login"):
         role = authenticate(username, password)
         if role:
             st.success(f"Logged in as {username} ({role})")
-            st.session_state["user"] = username
-            st.session_state["role"] = role
+            df = load_utilization()
+
+            if role == "user":
+                st.subheader("Submit Daily Utilization (% per project)")
+                date = st.date_input("Date", datetime.today())
+                project = st.text_input("Project Name")
+                percentage = st.slider("Utilization (%)", 0, 100)
+                if st.button("Submit"):
+                    save_utilization(username, date.strftime("%Y-%m-%d"), project, percentage)
+                    st.success("Utilization submitted")
+
+                st.subheader("Your Weekly Utilization Summary")
+                user_data = df[df["username"] == username]
+                summary = weekly_summary(user_data)
+                st.dataframe(summary)
+
+                if not summary.empty:
+                    fig = px.line(summary, x="week", y="percentage", color="project", title="Weekly Utilization by Project")
+                    st.plotly_chart(fig)
+                    pie_data = summary.groupby("project")["percentage"].sum().reset_index()
+                    pie_fig = px.pie(pie_data, names="project", values="percentage", title="Project Distribution")
+                    st.plotly_chart(pie_fig)
+
+            elif role == "admin":
+                st.subheader("Team Weekly Utilization Summary")
+                summary = weekly_summary(df)
+                st.dataframe(summary)
+
+                if not summary.empty:
+                    fig = px.bar(summary, x="week", y="percentage", color="username", barmode="group", title="Team Weekly Utilization")
+                    st.plotly_chart(fig)
+                    pie_data = summary.groupby("project")["percentage"].sum().reset_index()
+                    pie_fig = px.pie(pie_data, names="project", values="percentage", title="Team Project Distribution")
+                    st.plotly_chart(pie_fig)
         else:
             st.error("Invalid credentials")
-
-if "user" in st.session_state:
-    st.sidebar.subheader("Utilization Entry")
-    date = st.sidebar.date_input("Date")
-    project = st.sidebar.text_input("Project Name")
-    hours = st.sidebar.slider("Hours Worked", 0.0, 7.5, 0.5)
-    description = st.sidebar.text_area("Project Description")
-    if st.sidebar.button("Submit Utilization"):
-        save_utilization(st.session_state["user"], date, project, hours, description)
-        st.sidebar.success("Utilization submitted")
-
-    df = load_utilization()
-
-    if st.session_state["role"] == "admin":
-        st.header("📊 Team Utilization Dashboard")
-        st.dataframe(df)
-
-        fig1 = px.bar(df, x="date", y="hours", color="username", title="Daily Hours per User")
-        st.plotly_chart(fig1, use_container_width=True)
-
-        fig2 = px.pie(df, names="project", values="hours", title="Project Utilization")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    else:
-        st.header("📈 My Utilization")
-        user_df = df[df.username == st.session_state["user"]]
-        st.dataframe(user_df)
-
-        fig3 = px.line(user_df, x="date", y="hours", title="My Daily Utilization")
-        st.plotly_chart(fig3, use_container_width=True)
-
-        fig4 = px.pie(user_df, names="project", values="hours", title="My Project Distribution")
-        st.plotly_chart(fig4, use_container_width=True)
